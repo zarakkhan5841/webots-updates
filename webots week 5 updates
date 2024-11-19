@@ -1,0 +1,124 @@
+#include <webots/robot.h>
+#include <webots/light_sensor.h>
+#include <webots/distance_sensor.h>
+#include <webots/motor.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#define TIME_STEP 64
+#define MAX_SPEED 6.28
+#define NUM_LIGHT_SENSORS 8
+
+// a function to set motor values 
+WbDeviceTag initialize_motor(const char *motor_name) {
+  WbDeviceTag motor = wb_robot_get_device(motor_name);
+  if (!motor) {
+    fprintf(stderr, "Motor %s not found.\n", motor_name);
+    exit(1);
+  }
+  wb_motor_set_position(motor, INFINITY); // Set to velocity control mode
+  wb_motor_set_velocity(motor, 0);       // Initialize velocity to 0
+  return motor;
+}
+
+// a function to set light sensor value 
+void initialize_light_sensors(WbDeviceTag *sensors) {
+  char sensor_name[50];
+  for (int i = 0; i < NUM_LIGHT_SENSORS; ++i) {
+    sprintf(sensor_name, "ls%d", i); // Assuming sensors are named ls0 to ls7
+    sensors[i] = wb_robot_get_device(sensor_name);
+    if (!sensors[i]) {
+      fprintf(stderr, "Light sensor %s not found.\n", sensor_name);
+      exit(1);
+    }
+    wb_light_sensor_enable(sensors[i], TIME_STEP);
+  }
+}
+
+// a function that helps to read light sensor value 
+void read_light_sensors(WbDeviceTag *sensors, double *values) {
+  for (int i = 0; i < NUM_LIGHT_SENSORS; ++i) {
+    values[i] = wb_light_sensor_get_value(sensors[i]);
+  }
+}
+
+// a function to help find distance sensor values 
+WbDeviceTag initialize_distance_sensor(const char *sensor_name) {
+  WbDeviceTag sensor = wb_robot_get_device(sensor_name);
+  if (!sensor) {
+    fprintf(stderr, "Distance sensor %s is not been able to found .\n", sensor_name);
+    exit(1);
+  }
+  wb_distance_sensor_enable(sensor, TIME_STEP);
+  return sensor;
+}
+
+// a function that helps to read value of distanc sensor 
+double read_distance_sensor(WbDeviceTag sensor) {
+  return wb_distance_sensor_get_value(sensor);
+}
+
+int main(int argc, char **argv) {
+  wb_robot_init();
+
+  
+  WbDeviceTag left_motor = initialize_motor("left wheel motor");
+  WbDeviceTag right_motor = initialize_motor("right wheel motor");
+
+  
+  WbDeviceTag light_sensors[NUM_LIGHT_SENSORS];
+  initialize_light_sensors(light_sensors);
+
+  
+  WbDeviceTag distance_sensor = initialize_distance_sensor("ds0"); // Assuming sensor is named "ds0"
+
+  while (wb_robot_step(TIME_STEP) != -1) {
+    // Read light sensor values
+    double light_values[NUM_LIGHT_SENSORS];
+    read_light_sensors(light_sensors, light_values);
+
+    // finding value of distance sensor 
+    double distance = read_distance_sensor(distance_sensor);
+
+    // finding the speed depending on light sensors 
+    double left_light_sum = light_values[0] + light_values[1]; // Left sensors
+    double right_light_sum = light_values[2] + light_values[3]; // Right sensors
+    double left_speed = MAX_SPEED;
+    double right_speed = MAX_SPEED;
+
+    if (left_light_sum > right_light_sum) {
+      // More light on the left, turn right
+      left_speed = MAX_SPEED;
+      right_speed = MAX_SPEED / 2;
+    } else if (right_light_sum > left_light_sum) {
+      // More light on the right, turn left
+      left_speed = MAX_SPEED / 2;
+      right_speed = MAX_SPEED;
+    } else {
+      // same light intensity go stright 
+      left_speed = MAX_SPEED;
+      right_speed = MAX_SPEED;
+    }
+
+    
+    if (distance < 500.0) { 
+      left_speed = 0;
+      right_speed = 0;
+      printf("Obstacle detected! Distance: %.2f\n", distance);
+    }
+
+    // Set motor speeds
+    wb_motor_set_velocity(left_motor, left_speed);
+    wb_motor_set_velocity(right_motor, right_speed);
+
+    // Log light sensor and distance values
+    printf("Light Sensor Values: ");
+    for (int i = 0; i < NUM_LIGHT_SENSORS; ++i) {
+      printf("%.2f ", light_values[i]);
+    }
+    printf("| Distance: %.2f\n", distance);
+  }
+
+  wb_robot_cleanup();
+  return 0;
+}
