@@ -1,0 +1,160 @@
+#include <stdio.h>
+#include <webots/robot.h>
+#include <webots/motor.h>
+#include <webots/distance_sensor.h>
+#include <webots/light_sensor.h>
+#include <webots/gps.h>
+
+// all the pre-defined values 
+#define TIME_STEP 64            // time step of the robot 
+#define MAX_SPEED 6.28          // higest speed the robot can reach 
+#define LIGHT_THRESHOLD 500.0   // intensity of light to detect most light intensity dead end 
+#define WALL_THRESHOLD 100.0    // to detect wall 
+#define GPS_TOLERANCE 0.01      // position of the GPS 
+#define DEAD_END_DELAY 1.7      // the time taken to detect a dead end 
+#define DEAD_END_RESET_TIME 10.0// resetting the time after  dead end  avablity 
+#define MAX_DEAD_ENDS 10        // no. of dead ends 
+
+// Function prototypes
+bool detect_dead_end(double front_distance, double current_time);
+void update_motor_speeds(double left_speed, double right_speed);
+void store_dead_end_data(int index, double light_intensity, const double *gps_coordinates);
+void print_dead_end_summary(int index, double light_intensity, const double *coordinates);
+
+// sensors and devices used 
+WbDeviceTag left_motor, right_motor;
+WbDeviceTag distance_sensors[8];
+WbDeviceTag light_sensor, gps;
+
+// tracking the dead ends 
+double dead_end_light[MAX_DEAD_ENDS];
+double dead_end_coords[MAX_DEAD_ENDS][3];
+int detected_dead_ends = 0;
+double highest_light_intensity = 0.0;
+int brightest_dead_end_index = -1;
+
+// setting up the sensors and motors 
+void initialize_devices() {
+  // setting motors 
+  left_motor = wb_robot_get_device("motor - left wheel");
+  right_motor = wb_robot_get_device("motor - right wheel");
+  wb_motor_set_position(left_motor, INFINITY);
+  wb_motor_set_position(right_motor, INFINITY);
+
+  // setting distance sensors 
+  char sensor_name[10];
+  for (int i = 0; i < 8; i++) {
+    sprintf(sensor_name, "ps%d", i);
+    distance_sensors[i] = wb_robot_get_device(sensor_name);
+    wb_distance_sensor_enable(distance_sensors[i], TIME_STEP);
+  }
+
+  // setting light sensors 
+  light_sensor = wb_robot_get_device("ls0");
+  wb_light_sensor_enable(light_sensor, TIME_STEP);
+
+  // setting GPS 
+  gps = wb_robot_get_device("gps");
+  wb_gps_enable(gps, TIME_STEP);
+}
+
+// checking if the robot hits a dead end 
+bool detect_dead_end(double front_distance, double current_time) {
+  static int dead_end_count = 0;
+  static double last_dead_end_time = 0;
+
+  if (front_distance > WALL_THRESHOLD) {
+    if (dead_end_count == 0 || (current_time - last_dead_end_time) > DEAD_END_DELAY) {
+      last_dead_end_time = current_time;
+      dead_end_count++;
+    }
+  }
+
+  if (dead_end_count >= 2) {
+    dead_end_count = 0;  // setting the count back to original after detecting a dead end 
+    return true;
+  }
+
+  if ((current_time - last_dead_end_time) > DEAD_END_RESET_TIME) {
+    dead_end_count = 0;  // setting the count back to original when no dead end is noted for long time
+  }
+
+  return false;
+}
+
+// changing motor speed 
+void update_motor_speeds(double left_speed, double right_speed) {
+  wb_motor_set_velocity(left_motor, left_speed);
+  wb_motor_set_velocity(right_motor, right_speed);
+}
+
+// storing the data while there is a dead end detected 
+void store_dead_end_data(int index, double light_intensity, const double *gps_coordinates) {
+  dead_end_light[index] = light_intensity;
+  dead_end_coords[index][0] = gps_coordinates[0];
+  dead_end_coords[index][1] = gps_coordinates[1];
+  dead_end_coords[index][2] = gps_coordinates[2];
+}
+
+// displaying all  the dead ends that are detected 
+void print_dead_end_summary(int index, double light_intensity, const double *coordinates) {
+  printf("Dead end %d detected:\n", index + 1);
+  printf("  Light intensity: %.2f\n", light_intensity);
+  printf("  Coordinates: x = %.2f, y = %.2f, z = %.2f\n",
+         coordinates[0], coordinates[1], coordinates[2]);
+}
+
+// Main 
+int main() {
+  wb_robot_init();  // webots api 
+  initialize_devices();
+
+  while (wb_robot_step(TIME_STEP) != -1) {
+    // reading the data from the sensors 
+    double front_distance = wb_distance_sensor_get_value(distance_sensors[0]);
+    double left_wall = wb_distance_sensor_get_value(distance_sensors[5]);
+    double light_intensity = wb_light_sensor_get_value(light_sensor);
+    const double *gps_coordinates = wb_gps_get_values(gps);
+    double current_time = wb_robot_get_time();
+
+    // if there is a dead end detected 
+    if (detect_dead_end(front_distance, current_time)) {
+      if (detected_dead_ends < MAX_DEAD_ENDS) {
+        store_dead_end_data(detected_dead_ends, light_intensity, gps_coordinates);
+        print_dead_end_summary(detected_dead_ends, light_intensity, gps_coordinates);
+
+        // tracking the dead end with most light 
+        if (light_intensity > highest_light_intensity) {
+          highest_light_intensity = light_intensity;
+          brightest_dead_end_index = detected_dead_ends;
+        }
+
+        detected_dead_ends++;
+      } else if (brightest_dead_end_index != -1) {
+        printf("the dead end with most intensity of light is %d\n", brightest_dead_end_index + 1);
+        print_dead_end_summary(brightest_dead_end_index,
+                               highest_light_intensity,
+                               dead_end_coords[brightest_dead_end_index]);
+        break;  // if the robot hits the dead end with most light , stop the movement 
+      }
+    } else {
+      // logic behind the robots  movement 
+      double left_speed, right_speed;
+      if (front_distance > WALL_THRESHOLD) {  // when there is wall forward 
+        left_speed = MAX_SPEED;
+        right_speed = -MAX_SPEED;
+      } else if (left_wall > WALL_THRESHOLD) {  // when there is wall on the left side of robot 
+        left_speed = MAX_SPEED / 2;
+        right_speed = MAX_SPEED / 2;
+      } else {  // while there is no wall detected on left , the robot turns left 
+        left_speed = MAX_SPEED / 4;
+        right_speed = MAX_SPEED;
+      }
+      update_motor_speeds(left_speed, right_speed);
+    }
+  }
+
+  wb_robot_cleanup();  // cleaning up before quiting 
+  return 0;
+}
+// zk final5 
